@@ -1,0 +1,541 @@
+**********************************************************
+												*
+TASK 1 - Sequential Unix Version:						*
+												*
+**********************************************************
+This task starts by loading in the training file (i.e. small.txt or large.txt) and breaking it into words by splitting on spaces. Then we break each word into features (using only the features specified the assignment). Following this we examine each feature and if it has been seen already the count for that feature with the case of the word it is appearing in is increased. Otherwise, a new key/value pair is created for this feature. The structure of this feature dictionary is: {feature: [#timesUpper, #timesLower]}. 
+
+Following this we go through the feature dictionary and compute the probability of each feature. The new feature dictionary will look like: {feature: [#timesUpper, #timesLower, p(upper)]}. At this point we have the option to filter out results that don't appear a certain amount of times. This is specified by the global variable THRESHOLD. This option will be discussed further in the Task 5 section.
+
+Next we go through each line of the test file and break it into a feature vector.  The feature vector will look like: [word, [feature1#timesUpper, feature1#timesLower, feature1p(upper)], [feature2#timesUpper, feature2#timesLower, feature2p(upper)],...,[featureN#timesUpper, featureN#timesLower, featureNp(upper)]]. At this point we only need to multiply all the probabilities for each case and choose the larger of the two. At this stage I apply some extra rules to help with classification.  First, I check the difference in the probabilities and if it is below a threshold (set by the global DISTANCE) I use the sum of the amount of times each feature was seen in the particular case. For example, if the probabilities for 'the' were close I would calculate the number of times I saw 'the,' 'th', and 'he' in lowercase and the number of times I saw the same features in uppercase and whichever I saw more will win. However, if there sums are within another range (specified by the global TOSSDISTANCE) I simulated a weighted coin toss, obviously weighted towards the word with the higher probability. Finally, I spit out the word that I have decided is the correct case. 
+
+This is the program 'unixVersion.py'.
+
+**********************************************************
+												*
+TASK 2 - Model:									*
+												*
+**********************************************************
+The first part of the model uses mappers to read in the training data (i.e. small.txt or large.txt), split the file by spaces, break each word into features and insert it into a dictionary of features. Just like in my sequential version if we've seen a feature before its count is incremented if we haven't, a new key/value pair is created. The structure of the feature dictionary is the same as that of the sequential version: {feature: [#timesUpper, #timesLower]}. One key difference is that the dictionary of features is flushed every 10,000 elements and then flushed at the end. The output of this mapper is: feature, #timesUpper, #timesLower.
+
+This is the program 'model-mapper.py'.
+
+Following the map phase is a reduce phase that calculates the probability of each feature. This works almost identically to the word counting reducer described in the lectures. We read features adding up the counts of #timesUpper and #timesLower until we come across a new word. At which point we calculate the probability of that feature and print: feature, #timesUpper, #timesLower, p(upper). One note is that if p(upper) = 0 we replace it with 0.01 to eliminate probabilities of 0. We also have the option in this reducer to cut out features which only appeared more than a certain threshold (specified by the global THRESHOLD).
+
+At the end of this phase I use the Hadoop command 'getmerge' to merge the output files from these reducers into one feature dictionary which the mappers in the next phase will use. 
+
+This is the program 'model-reducer.py'.
+
+**********************************************************
+												*
+TASK 3 - Test -> features:								*
+												*
+**********************************************************
+This is a map phase where each mapper reads in the feature dictionary, from the file system, that was constructed in task 2. Then we reconstruct the feature dictionary. At this point we go through every line of the test file and construct a feature vector for the word. Once this feature vector is constructed it is printed in the form: word, feature1#timesUpper, feature1#timesLower, feature1p(upper),...,featureN#timesUpper, featureN#timesLower, featureNp(upper).
+
+This is the program 'part3-mapper.py'
+
+**********************************************************
+												*
+TASK 4 - Classify test features:							*	
+												*
+**********************************************************
+This is almost identical to the sequential version. First we check the difference in probabilities and if it is below a global threshold we will get the total amount of times we've seen that feature in that case. If these sums are close we will do a weighted coin toss. Finally, we output the word in the correct case. If the difference in probabilities isn't within this range the larger is chosen.
+
+This is program 'part4-mapper.py'
+
+**********************************************************
+												*
+TASK 5 - Conversion and evaluation:						*
+												*
+**********************************************************
+The conversion from lowercase to uppercase is actually done as the output of the reducer explained in Task 4. 
+
+Automation of the tasks was done with the scripts 'u.sh', 'a2.sh', and 'mr.sh' for the sequential and distributed tasks (respectively). With 'mr.sh' being used to test the Hadoop version locally. Comparisons were made by sorting the truth file and results file and running a python script (compare.py) which compares the first letter in each word to check for the correct case. This can be seen in the scripts.
+
+The following test results were generated using THRESHOLD = 1, DISTANCE = 0.01, TOSSDISTANCE = 500, and TOSS = 0.66, unless otherwise specified.
+
+Test results for distributed version (ran on Hadoop):
+% accurate			
+  85.6% (small.txt)
+  88.0% (large.txt)
+
+Test results for sequential version on local machine:
+% accurate
+  85.6% (small.txt)
+  87.9% (large.txt)
+  
+Test results for filtering features (unixVersion.py with small.txt. Ran locally):
+Num times feature must appear:					% accuracy					size of feature dictionary 	
+0										   85.6%						667KB
+1										   85.4%						303KB
+5										   84.6%						187KB
+10										   84.4%						172KB
+50										   84.2%						162KB
+100										   84.0%						162KB
+1000										   84.1%						161KB
+
+Test results for filtering features (Hadoop version with large.txt. Ran on Hadoop):
+Num times feature must appear:					% accuracy					size of feature dictionary 	
+0										   88.0%						48.3MB							
+1										   88.0%						18.1MB
+5										   87.9%						8.1MB
+50										   87.4%						5.5MB
+
+From these results it is clear that filtering out features which only appear a small amount of times can be very beneficial in terms of memory without a large impact on the performance of our classifier.
+
+**********************************************************
+												*
+Programs											*
+												*
+**********************************************************
+All programs and scripts generated for this assignment are located in this section.
+
+**********************************************************
+unixVersion.py (TASK 1)								*
+**********************************************************
+#!/usr/bin/python
+
+import sys,io
+from random import random
+
+# this will be our features dictionary
+features = {}
+get = features.get
+
+# the minimum times a feature must be seen to remain in the dictionary
+THRESHOLD = 2
+
+# how far apart prob's need to be to check sums
+DISTANCE = 0.01
+
+# determines the distance the sums have to be to do a coin toss
+TOSSDISTANCE = 500
+
+# determines the weight of the weighted coin toss
+# for determining case when prob's are close
+TOSS = 0.66
+
+# takes a word
+# returns a list [word,feature1,#timesUpper1,#timesLower1,p(U),...]
+# if the feature doesn't exist a None is returned in its place
+def makeVector(t):
+    if t=='':
+        return [[0]]
+    if len(t) > 3:
+        return [t,get(t),get(t[-2:]),get(t[-3:]),get(t[:2]),get(t[:3])]
+    elif len(t) == 3:
+        return [t,get(t),get(t[:2]),get(t[2:])]
+    else:
+        return [t,get(t)]
+
+# takes the counts as a list
+# returns the probability this feature is uppercase
+def prob(f):
+    pfU = float(f[0]) / (float(f[0])+float(f[1]))
+    if pfU == 0: pfU = 0.1
+    return pfU
+
+# model-mapper.py
+# contruct feature dictionary and count occurrences of each feature
+with open(sys.argv[1],'r') as f:
+    
+    for line in f:
+        line = line.strip('\n').split()
+        for word in line:
+            isLower = word.islower()
+            length = len(word)
+
+            # break word into features depending on its length
+            if length > 3: ft = [word,word[-2:],word[-3:],word[:2],word[:3]]
+            elif length==3: ft = [word,word[-2:],word[:2]]
+            else: ft = [word]
+
+            ft = map(lambda x: x.lower(),ft)
+            # insert every feature into the dictionary or create a new
+            # key -> value pair
+            for d in ft:
+                if d in features: 
+                    if isLower: features[d][1] += 1
+                    else: features[d][0] += 1                
+                else:
+                    if isLower: features[d] = [0,1]
+                    else: features[d] = [1,0]
+# model-reducer.py
+# remove values which haven't appeared more than THRESHOLD times
+# calculate probabilities of each feature
+toRemove = []
+for f in features:
+    if features[f][0] < THRESHOLD and features[f][1] == 0\
+            or features[f][0] == 0 and features[f][1] < THRESHOLD:
+        toRemove.append(f)
+        continue
+    features[f] += [prob(features[f])]
+
+for f in toRemove: del features[f]
+    
+# break line into feature vector
+for line in sys.stdin:
+    line = line.strip()
+    vListL = [makeVector(line)]
+
+    newString = ''
+
+    # part4-reducer.py
+    # run classifier on the test data
+    for lower in vListL:
+        weightLower = weightUpper = False
+
+        lower = filter(lambda x: x!=None,lower)
+        # this lien has no features 
+        if len(lower) < 2:
+            if lower[0] != [0]:
+                print lower[0],
+            continue
+        # get the probabilites for each feature out of the lines
+        lowerP = [1 - float(lower[i][2]) for i in range(1,len(lower))]
+        upperP = [float(lower[i][2]) for i in range(1,len(lower))]
+
+        # multiple all the probabilities together
+        pL = reduce(lambda x,y: x*y,lowerP)
+        pU = reduce(lambda x,y: x*y,upperP)
+
+        # check if the two probabilities are close 
+        if abs(pU - pL) < DISTANCE:
+            # get the amount of times we've seen all the features of this word
+            # in each case
+            sumL = reduce(lambda x,y: x+y, map(lambda x: x[1],lower[1:]))
+            sumU = reduce(lambda x,y: x+y, map(lambda x: x[0],lower[1:]))
+
+            # if the sum are close do a 'weighted coin toss' to determing case
+            # weighted more towards the higher prob
+            if abs(sumL - sumU) < TOSSDISTANCE:
+                toss = random()
+                if pU > pL:
+                    if toss < TOSS: newString += lower[0].capitalize().strip() + ' '
+                    else: newString += lower[0].strip() + ' '
+                else:
+                    if toss < TOSS: newString += lower[0].strip() + ' '
+                    else: newString += lower[0].capitalize().strip() + ' '
+            else:
+                if sumL < sumU: newString += lower[0].capitalize() + ' '
+                else: newString += lower[0] + ' '
+
+        # get the case of the word from the higher prob
+        else:
+            if pL < pU: newString += lower[0].capitalize() + ' '
+            elif pL > pU: newString += lower[0] + ' '
+    print '%s' % newString.strip()
+
+**********************************************************
+model-mapper.py	(TASK 2)								*
+**********************************************************
+#!/usr/bin/python
+
+import sys
+
+# this will be our features dictionary
+features = {}
+LOWER = 1
+UPPER = 0
+for line in sys.stdin:
+    line = line.strip('\n').split()
+    for word in line:
+        isLower = word.islower()
+        length = len(word)
+
+        # break the work into features depending on its length
+        if length > 3: ft = [word,word[-2:],word[-3:],word[:2],word[:3]]
+        elif length==3: ft = [word,word[-2:],word[:2]]
+        else: ft = [word]
+
+        ft = map(lambda x: x.lower(),ft)
+        # insert the words features into the dictionary
+        # or create a new location in the dictionary for the feature
+        for d in ft:
+            if d in features: 
+                if isLower: features[d][LOWER] += 1
+                else: features[d][UPPER] += 1                
+            else:
+                if isLower: features[d] = [0,1]
+                else: features[d] = [1,0]
+    # flush the dictionary at 10000 elements
+    if len(features) > 10000:
+        for k in features:
+            print '%s\t%f\t%f' % \
+                (k,features[k][UPPER],features[k][LOWER])
+        features.clear()
+# flush the remainder of the dictionary
+for k in features:
+    print '%s\t%f\t%f' % (k,features[k][UPPER],features[k][LOWER])
+
+**********************************************************
+model-reducer.py	(TASK 2)								*
+**********************************************************
+#!/usr/bin/python
+import sys
+from random import random
+
+# This is the difference in probabilities that will cause
+# us to check the counts and perhaps do a coin toss
+DISTANCE = 0.01
+
+# the difference in amounts of times we've seen each word required
+# to do a coin toss
+TOSSDISTANCE = 500
+
+# weight of the coin
+TOSS = 0.66
+
+for line in sys.stdin:
+    weightLower = weightUpper = False
+    line = line.strip()
+    line = line.split('\t')
+
+    # this is a word with no features
+    if len(line)  == 1:
+        if line[0][1] == '0': print
+        else: print line[0]
+        continue
+
+    lower = line
+    word = lower[0]
+
+    # get the probabilities out of the line
+    lowerP = [1 - float(lower[i]) for i in range(3,len(lower),3)]
+    upperP = [float(lower[i]) for i in range(3,len(lower),3)]
+
+    # calculate the probabilities
+    pL = reduce(lambda x,y: x*y,lowerP)
+    pU = reduce(lambda x,y: x*y,upperP)
+
+    # check the difference between the probabilities for further analysis
+    if abs(pU - pL) < DISTANCE :
+        sumL = reduce(lambda x,y: x+y, [float(lower[i]) for i in range(2,len(lower),3)])
+        sumU = reduce(lambda x,y: x+y, [float(lower[i]) for i in range(1,len(lower),3)])
+
+        # if the sum are close do a 'weighted coin toss' to determing case
+        # weighted more towards the higher prob
+        if abs(sumL - sumU) < TOSSDISTANCE:
+            toss = random()
+            if pU > pL:
+                if toss < TOSS: case = word.capitalize()
+                else: case = word
+            else:
+                if toss < TOSS: case = word
+                else: case = word.capitalize()
+        else:
+            if sumL < sumU: case = word.capitalize()
+            else: case = word
+    else:
+        if pU > pL: case = word.capitalize()
+        elif pU < pL: case = word
+    print '%s' % case
+
+**********************************************************
+part3-mapper.py (TASK 3)								*
+**********************************************************
+#!/usr/bin/python
+
+import sys
+
+features = {}
+words = []
+get = features.get
+
+def makeVector(t):
+    # get the feature tuples from the features dict
+    # None is returned for a feature thats not known
+    if t=='':
+        return [[0]]
+    if len(t) > 3:
+        return [t,get(t),get(t[-2:]),get(t[-3:]),get(t[:2]),get(t[:3])]
+    elif len(t) == 3:
+        return [t,get(t),get(t[:2]),get(t[2:])]
+    else:
+        return [t,get(t)]
+
+# parse features file
+f = open('features','r')
+lines = f.readlines()
+f.close()
+
+# split lines into [word,#timesUpper,#timesLower,probUpper]
+# reconstruct the trained feature dictionary
+length = len(lines)
+for i in xrange(length):
+    lines[i] = lines[i].strip('\n').split('\t')
+    p = [lines[i][0]]
+    p += [float(j) for j in lines[i][1:]]
+    features[lines[i][0]] = p
+
+for line in sys.stdin:
+    line = line.strip()
+    # split each word into a feature vector
+    # break line into features
+    if line == '':
+        word=[makeVector('')]
+    else:
+        for w in line.split():
+            word=[makeVector(w)]
+
+    # output the feature vectors for this test word
+    for i in word:
+        print '%s\t' % i[0],
+        i = filter(lambda x: x!=None,i)
+        for j in range(1,len(i)):
+            for k in i[j][1:]:
+                print '%s\t' % k,
+    print
+
+**********************************************************
+part4-reducer.py (TASK 4)								*
+**********************************************************
+#!/usr/bin/python
+import sys
+from random import random
+
+# This is the difference in probabilities that will cause
+# us to check the counts and perhaps do a coin toss
+DISTANCE = 0.01
+
+# the difference in amounts of times we've seen each word required
+# to do a coin toss
+TOSSDISTANCE = 500
+
+# weight of the coin
+TOSS = 0.66
+
+for line in sys.stdin:
+    weightLower = weightUpper = False
+    line = line.strip()
+    line = line.split('\t')
+
+    # this is a word with no features
+    if len(line)  == 1:
+        if line[0][1] == '0': print
+        else: print line[0]
+        continue
+
+    lower = line
+    word = lower[0]
+
+    # get the probabilities out of the line
+    lowerP = [1 - float(lower[i]) for i in range(3,len(lower),3)]
+    upperP = [float(lower[i]) for i in range(3,len(lower),3)]
+
+    # calculate the probabilities
+    pL = reduce(lambda x,y: x*y,lowerP)
+    pU = reduce(lambda x,y: x*y,upperP)
+
+    # check the difference between the probabilities for further analysis
+    if abs(pU - pL) < DISTANCE :
+        sumL = reduce(lambda x,y: x+y, [float(lower[i]) for i in range(2,len(lower),3)])
+        sumU = reduce(lambda x,y: x+y, [float(lower[i]) for i in range(1,len(lower),3)])
+
+        # if the sum are close do a 'weighted coin toss' to determing case
+        # weighted more towards the higher prob
+        if abs(sumL - sumU) < TOSSDISTANCE:
+            toss = random()
+            if pU > pL:
+                if toss < TOSS: case = word.capitalize()
+                else: case = word
+            else:
+                if toss < TOSS: case = word
+                else: case = word.capitalize()
+        else:
+            if sumL < sumU: case = word.capitalize()
+            else: case = word
+    else:
+        if pU > pL: case = word.capitalize()
+        elif pU < pL: case = word
+        
+    print '%s' % case
+
+**********************************************************
+a2.sh												*
+**********************************************************
+# TAKES THE TRAINING FILE AS AN ARGUMENT
+# clean up the file system
+rm results.txt
+rm sortResults.txt
+rm features
+hadoop fs -rmr /user/s1129936/output/
+
+# run the first map-reduce phase (task 2 and 3)
+hadoop jar /opt/hadoop/hadoop-0.20.2/contrib/streaming/hadoop-0.20.2-streaming.jar -input /user/s1129936/data/input/$1 -output /user/s1129936/output -mapper model-mapper.py -file model-mapper.py -reducer model-reducer.py -file model-reducer.py -jobconf mapred.job.name="EX2.0!!!" 
+# merge the output of the first mapreduce phase
+# this is the feature dictionary from the training set
+hadoop fs -getmerge /user/s1129936/output/ ~/exc/a2/features
+hadoop fs -rmr /user/s1129936/output/
+
+# run the second mapreduce phase
+hadoop jar /opt/hadoop/hadoop-0.20.2/contrib/streaming/hadoop-0.20.2-streaming.jar -input /user/s1129936/data/input/test.txt -output /user/s1129936/output -mapper part3-mapper.py -file part3-mapper.py -reducer part4-reducer.py -file part4-reducer.py -file ~/exc/a2/features -jobconf mapred.job.name="EX2.1!!!"
+
+# merge the results
+hadoop fs -getmerge /user/s1129936/output/ ~/exc/a2/results.txt
+hadoop fs -rmr /user/s1129936/output/
+
+# remove ending tabs from the results, sort, and compare to the
+# validation set
+python removeTab.py
+sort -o sortResults.txt results.txt
+python compare.py sortResults.txt sortTest.txt
+
+**********************************************************
+u.sh												*
+**********************************************************
+cat test.txt | python unixVersion.py small.txt > unixTest
+sort -f unixTest > unixSorted
+python compare.py unixSorted sortT2
+
+**********************************************************
+mr.sh												*
+**********************************************************
+cat small.txt | python model-mapper.py > junk
+sort junk > test
+rm junk
+echo "map1 finished"
+cat test | python model-reducer.py > features
+echo "red1 finished"
+cat test.txt | python part3-mapper.py > test3
+echo "map2 finished"
+cat test3 | python part4-reducer.py > test4
+echo "red2 finished"
+sort -f test4 > sortT
+python compare.py sortT sortT2
+
+**********************************************************
+compare.py											*
+**********************************************************
+import sys
+# takes the two files to compare as arguments
+f = open(sys.argv[1])
+resultsFile = map(lambda x: x.strip(' \n'), f.readlines())
+f.close()
+
+f = open(sys.argv[2])
+truthFile = map(lambda x: x.strip(' \n'), f.readlines())
+f.close()
+
+wrong = 0
+for i in range(len(resultsFile)):
+    if len(resultsFile[i]) < 1: wrong +1
+    elif resultsFile[i][0] != truthFile[i][0]:
+        wrong += 1
+
+print wrong
+print (1 - wrong / 932.0) * 100
+
+**********************************************************
+removeTab.py										*
+**********************************************************
+import re
+re.compile('\t')
+f = open('results.txt')
+lines = f.readlines()
+f.close
+lines = map(lambda x: re.sub('\t','',x),lines)
+f = open('results.txt','w')
+f.write(''.join(lines))
+f.close()

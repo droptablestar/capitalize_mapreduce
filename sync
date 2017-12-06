@@ -1,0 +1,2 @@
+scp model-mapper.py model-reducer.py part3-mapper.py part4-reducer.py s1129936@ssh.inf.ed.ac.uk:~/exc/a2/
+
